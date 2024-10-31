@@ -1,11 +1,25 @@
 from typing import Dict, Tuple
 import jax
 import jax.numpy as jnp
+from jax.experimental import mesh_utils
+from jax.sharding import Mesh, NamedSharding, PartitionSpec as PS
+from functools import partial
 
-LN_2 = 0.69314718056  # ln(2) = 1.0 / LOG2_E
+LN_2 = jnp.array(0.69314718056, dtype=jnp.bfloat16)
 
-@jax.jit
-def multinomial_sample_one(probs_sort: jax.Array, key) -> jax.Array:
+def create_sampling_mesh():
+    """Create mesh matching the weight loading strategy"""
+    devices = mesh_utils.create_device_mesh((4, 1))
+    return Mesh(devices, ('mp', 'fsdp'))
+
+def get_sharding(mesh, shape, axes=None):
+    """Helper to create sharding for intermediate tensors"""
+    if axes is None:
+        axes = PS(None)  # Replicated by default
+    return NamedSharding(mesh, axes)
+
+@partial(jax.jit, static_argnums=(2,))
+def multinomial_sample_one(probs_sort: jax.Array, key: jax.Array, mesh: Mesh) -> jax.Array:
     """
     Sample from a multinomial distribution using the Gumbel-max trick.
     This method provides better numerical stability than naive multinomial sampling.
@@ -16,13 +30,23 @@ def multinomial_sample_one(probs_sort: jax.Array, key) -> jax.Array:
         
     Returns:
         Array of sampled indices with shape [..., 1]
+    
+    Mesh-aware multinomial sampling
     """
-    q = jax.random.exponential(key=key, shape=probs_sort.shape).astype(jnp.bfloat16)
-    result = jnp.argmax(probs_sort / q, axis=-1, keepdims=True).astype(jnp.int32)
-    return result
 
-@jax.jit
-def get_window_probs(sorted_probs: jax.Array, i: jax.Array) -> jax.Array:
+    # Get sharding for intermediate calculations
+    batch_sharding = get_sharding(mesh, probs_sort.shape, PS('fsdp', None))
+    
+    probs_sort = probs_sort.astype(jnp.bfloat16)
+    q = jax.random.exponential(key=key, shape=probs_sort.shape).astype(jnp.bfloat16)
+    
+    # Ensure proper sharding of intermediate results
+    with mesh:
+        result = jnp.argmax(probs_sort / q, axis=-1, keepdims=True)
+        return jax.device_put(result.astype(jnp.int32), batch_sharding)
+
+@partial(jax.jit, static_argnums=(2,))
+def get_window_probs(sorted_probs: jax.Array, i: jax.Array, mesh: Mesh) -> jax.Array:
     """
     Extract probabilities up to index i from sorted probability distribution.
     Uses efficient masking for TPU optimization.
@@ -33,45 +57,69 @@ def get_window_probs(sorted_probs: jax.Array, i: jax.Array) -> jax.Array:
         
     Returns:
         Masked probability array where values beyond index i are set to zero
+    
+    Mesh-aware window probability calculation
     """
-    vocab_size = sorted_probs.shape[1]
+
+    vocab_size = sorted_probs.shape[-1]
     indices = jnp.arange(vocab_size, dtype=jnp.int32)
     mask = indices <= i
-    mask = jnp.broadcast_to(mask, sorted_probs.shape)
-    return jnp.where(mask, sorted_probs, jnp.zeros_like(sorted_probs))
+    
+    with mesh:
+        mask = jnp.broadcast_to(mask, sorted_probs.shape)
+        result = jnp.where(mask, sorted_probs, jnp.zeros_like(sorted_probs))
+        return jax.device_put(result, get_sharding(mesh, result.shape, PS('fsdp', None)))
 
-@jax.jit
-def basic_sample(logits: jax.Array, *, temperature: float | jax.Array, top_p: float | jax.Array, 
-           top_k: int | jax.Array, min_p: float | jax.Array, key=jax.random.PRNGKey(1337)) -> jax.Array:
-    """Basic sampling function with temperature, top-p, top-k, and min-p controls.
+@partial(jax.jit, static_argnums=(6,))
+def basic_sample(logits: jax.Array, temperature: jax.Array, top_p: jax.Array,
+                top_k: jax.Array, min_p: jax.Array, key: jax.Array,
+                mesh: Mesh) -> jax.Array:
+    """
+    Basic sampling function with temperature, top-p, top-k, and min-p controls.
     
     This implements the core sampling strategy that corresponds to different quadrants
     in the entropy/varentropy framework shown in the image.
+    
+    Mesh-aware basic sampling
     """
-    bsz = logits.shape[0]
-    logit = logits[:, -1]
-    probs = jax.nn.softmax(logit / temperature, axis=-1)
 
-    # Apply min-p sampling (for low entropy cases)
-    if min_p > 0.0:
-        p_max = jnp.max(probs, axis=-1, keepdims=True)
-        indices_to_remove = probs < (min_p * p_max)
-        logit = jnp.where(indices_to_remove, jnp.full_like(logit, float('-inf')), logit)
+    with mesh:
+        bsz = logits.shape[0]
+        logit = logits[:, -1]
+        
+        # Ensure proper sharding of softmax computation
+        probs = jax.nn.softmax(logit / temperature, axis=-1).astype(jnp.bfloat16)
+        probs = jax.device_put(probs, get_sharding(mesh, probs.shape, PS('fsdp', None)))
+        
+        # Apply min-p sampling (for low entropy cases)
+        if min_p > 0.0:
+            p_max = jnp.max(probs, axis=-1, keepdims=True)
+            indices_to_remove = probs < (min_p * p_max)
+            logit = jnp.where(indices_to_remove, 
+                            jnp.full_like(logit, float('-inf')), 
+                            logit)
+        
+        # TPU-optimized top-k with proper sharding
+        top_k = jnp.minimum(top_k, logit.shape[-1])
+        top_k_probs, top_k_indices = jax.lax.top_k(probs, k=top_k)
+        probs_sort = jnp.flip(top_k_probs, axis=-1)
+        probs_idx = jnp.flip(top_k_indices, axis=-1)
+        
+        # Maintain sharding through cumsum
+        probs_sum = jnp.cumsum(probs_sort, axis=-1)
+        
+        # Apply top-p sampling (handles high entropy cases)
+        mask = jnp.where(probs_sum - probs_sort > top_p, 1.0, 0.0)
+        probs_sort = probs_sort * (1 - mask)
+        probs_sort = probs_sort / (jnp.sum(probs_sort, axis=-1, keepdims=True) 
+                                 + jnp.bfloat16(1e-6))
+        
+        next_token = multinomial_sample_one(probs_sort, key, mesh)
+        next_token_g = jnp.take_along_axis(probs_idx, 
+                                         next_token.reshape(bsz, 1), 
+                                         axis=-1)
+        return next_token_g
 
-    # Apply top-k sampling (handles high varentropy cases)
-    top_k_probs, top_k_indices = jax.lax.top_k(probs, k=top_k)
-    probs_sort = jnp.flip(top_k_probs, axis=-1)
-    probs_idx = jnp.flip(top_k_indices, axis=-1)
-    probs_sum = jnp.cumsum(probs_sort, axis=-1)
-    
-    # Apply top-p sampling (handles high entropy cases)
-    mask = jnp.where(probs_sum - probs_sort > top_p, 1.0, 0.0)
-    probs_sort = probs_sort * (1 - mask)
-    probs_sort = probs_sort / jnp.sum(probs_sort, axis=-1, keepdims=True)
-    
-    next_token = multinomial_sample_one(probs_sort, key)
-    next_token_g = jnp.take_along_axis(probs_idx, next_token.reshape(bsz, 1), axis=-1)
-    return next_token_g.astype(jnp.int32)
 
 @jax.jit
 def adaptive_sample(logits: jax.Array, *, temperature: float | jax.Array = 0.666, key=jax.random.PRNGKey(1337), epsilon: float = 0.01) -> jax.Array:
@@ -189,102 +237,79 @@ def adaptive_sample(logits: jax.Array, *, temperature: float | jax.Array = 0.666
     
     return next_token_global.astype(jnp.int32)
 
-@jax.jit
-def calculate_varentropy_logsoftmax(logits: jnp.ndarray, axis: int = -1) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """Calculate the entropy and varentropy of the probability distribution using logsoftmax.
-    
-    As discussed in the thread, varentropy measures overall uncertainty/entropy variance.
-    This implementation:
-    1. Converts logits to probabilities via logsoftmax
-    2. Calculates entropy (uncertainty per step)
-    3. Calculates varentropy (variance in uncertainty)
-    """
-    log_probs = jax.nn.log_softmax(logits, axis=axis)
-    probs = jnp.exp(log_probs)
-    entropy = -jnp.sum(probs * log_probs, axis=axis) / LN_2  
-    varentropy = jnp.sum(probs * (log_probs / LN_2 + entropy[..., None])**2, axis=axis)
-    return entropy, varentropy
-
-@jax.jit
-def calculate_metrics(logits: jnp.ndarray) -> Dict[str, jnp.ndarray]:
-    """Calculate various metrics from logits and attention scores.
-    
-    This implementation aligns with the quadrant framework shown in the image:
-    - Measures both entropy (uncertainty) and varentropy (variance in uncertainty)
-    - Tracks attention patterns which can indicate when to use different sampling strategies (removed for now)
-    """
-    entropy, varentropy = calculate_varentropy_logsoftmax(logits)
-
-    return {
-        "logits_entropy": jnp.mean(entropy),
-        "logits_varentropy": jnp.mean(varentropy),
-    }
-
-@jax.jit
-def new_sample(logits: jax.Array, key=jax.random.PRNGKey(1337), clarifying_question_token: int = 2564) -> jax.Array:
-    """Enhanced sampling function that implements the quadrant-based sampling strategy.
-    
-    This directly implements the framework from the image with four quadrants:
-    - Low entropy, low varentropy: greedy sampling
-    - High entropy, low varentropy: insert clarifying question
-    - Low entropy, high varentropy: explore with temperature
-    - High entropy, high varentropy: resample with high temperature
-    """
-    
-    metrics = calculate_metrics(logits)
-    ent = metrics["logits_entropy"]
-    vent = metrics["logits_varentropy"]
-    
-
-    # Thresholds defining the quadrants
-    LOW_ENTROPY = 0.01
-    HIGH_ENTROPY = 2.1
-    LOW_VARENTROPY = 0.05
-    HIGH_VARENTROPY = 5.8
-    # LOW_ATTN_ENTROPY = 11.915
-    # HIGH_ATTN_ENTROPY = 11.926
-    # LOW_ATTN_VARENTROPY = 0.001
-    # HIGH_ATTN_VARENTROPY = 0.009
-    # LOW_AGREEMENT = 2e-06
-    # HIGH_AGREEMENT = 5e-06
-    # LOW_INTERACTION = 0.2
-    # HIGH_INTERACTION = 0.264
-
-    # Quadrant 1: Low entropy, low varentropy - "flowing with unspoken intent"
-    if (ent < LOW_ENTROPY and vent < LOW_VARENTROPY):
-        return jnp.argmax(logits[:, -1], axis=-1, keepdims=True).astype(jnp.int32)
-
-    # Quadrant 2: High entropy, low varentropy - "treading carefully"
-    elif (ent > HIGH_ENTROPY and vent < LOW_VARENTROPY):
-        return jnp.array([[clarifying_question_token]])
-
-    # Quadrant 3: Low entropy, high varentropy - "exploring forks"
-    elif (ent < HIGH_ENTROPY and vent > HIGH_VARENTROPY):
-        return basic_sample(
-            logits,
-            temperature=0.8,
-            top_p=0.95,
-            top_k=40,
-            min_p=0.02,
-            key=key
+@partial(jax.jit, static_argnums=(1,))
+def calculate_metrics(logits: jnp.ndarray, mesh: Mesh) -> Dict[str, jnp.ndarray]:
+    """Mesh-aware metrics calculation"""
+    with mesh:
+        log_probs = jax.nn.log_softmax(logits, axis=-1)
+        probs = jnp.exp(log_probs)
+        
+        # Calculate entropy with proper sharding
+        entropy = -jnp.sum(probs * log_probs, axis=-1) / LN_2
+        entropy = jax.device_put(entropy, get_sharding(mesh, entropy.shape, PS('fsdp')))
+        
+        # Calculate varentropy with proper sharding
+        varentropy = jnp.sum(
+            probs * (log_probs / LN_2 + entropy[..., None])**2, 
+            axis=-1
         )
+        varentropy = jax.device_put(varentropy, get_sharding(mesh, varentropy.shape, PS('fsdp')))
+        
+        return {
+            "logits_entropy": jnp.mean(entropy),
+            "logits_varentropy": jnp.mean(varentropy)
+        }
 
-    # Quadrant 4: High entropy, high varentropy - "resampling in the mist"
-    elif (ent > HIGH_ENTROPY and vent > HIGH_VARENTROPY):
-        return basic_sample(
-            logits,
-            temperature=1.2,
-            top_p=0.85,
-            top_k=27,
-            min_p=0.05,
-            key=key
-        )
-
-    # Default: Adaptive sampling for cases that don't clearly fall into a quadrant
-    else:
-        return adaptive_sample(
-            logits,
-            temperature=0.666,
-            key=key,
-            epsilon=0.1
-        )
+def new_sample(logits: jax.Array, key=jax.random.PRNGKey(1337),
+              clarifying_question_token: int = 2564) -> jax.Array:
+    """Mesh-aware main sampling function"""
+    mesh = create_sampling_mesh()
+    
+    with mesh:
+        metrics = calculate_metrics(logits, mesh)
+        ent = metrics["logits_entropy"]
+        vent = metrics["logits_varentropy"]
+        
+        # Constants and thresholds
+        LOW_ENTROPY = 0.01
+        HIGH_ENTROPY = 2.1
+        LOW_VARENTROPY = 0.05
+        HIGH_VARENTROPY = 5.8
+        
+        # Quadrant logic with mesh-aware sampling
+        if (ent < LOW_ENTROPY and vent < LOW_VARENTROPY):
+            return jnp.argmax(logits[:, -1], axis=-1, keepdims=True)
+        
+        elif (ent > HIGH_ENTROPY and vent < LOW_VARENTROPY):
+            return jnp.array([[clarifying_question_token]])
+        
+        elif (ent < HIGH_ENTROPY and vent > HIGH_VARENTROPY):
+            return basic_sample(
+                logits,
+                jnp.array(0.8, dtype=jnp.bfloat16),
+                jnp.array(0.95, dtype=jnp.bfloat16),
+                jnp.array(40, dtype=jnp.int32),
+                jnp.array(0.02, dtype=jnp.bfloat16),
+                key,
+                mesh
+            )
+        
+        elif (ent > HIGH_ENTROPY and vent > HIGH_VARENTROPY):
+            return basic_sample(
+                logits,
+                jnp.array(1.2, dtype=jnp.bfloat16),
+                jnp.array(0.85, dtype=jnp.bfloat16),
+                jnp.array(27, dtype=jnp.int32),
+                jnp.array(0.05, dtype=jnp.bfloat16),
+                key,
+                mesh
+            )
+        
+        else:
+            return adaptive_sample(
+                logits,
+                temperature=jnp.array(0.666, dtype=jnp.bfloat16),
+                key=key,
+                epsilon=jnp.array(0.1, dtype=jnp.bfloat16),
+                mesh=mesh
+            )
