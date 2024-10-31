@@ -10,7 +10,7 @@ import tyro
 from entropix.config import LLAMA_1B_PARAMS
 from entropix.kvcache import KVCache
 from entropix.model import xfmr
-from entropix.sampler import adaptive_sample
+from entropix.sampler import new_sample
 from entropix.prompts import create_prompts_from_csv, prompt6, p4o
 from entropix.tokenizer import Tokenizer
 from entropix.weights import load_weights
@@ -90,11 +90,9 @@ def main(weights_path: Path = DEFAULT_WEIGHTS_PATH.joinpath('1B-Instruct')):
       cur_pos += 1
       logits, kvcache, _ = xfmr_fn(xfmr_weights, model_params, next_token, cur_pos, freqs_cis[cur_pos:cur_pos+1], kvcache) # for now we discard the scores
       # logits shape is [bsz, 1, vocab_size] when generating one token at a time
-      next_token = adaptive_sample(
+      next_token = new_sample(
           logits.reshape(-1, logits.shape[-1]),  # reshape to [batch_size, vocab_size]
-          temperature=0.666,
-          key=jax.random.PRNGKey(1337),
-          epsilon=0.01
+          key=jax.random.PRNGKey(1337)
       )
       #next_token = sample_fn(logits) #, scores, cur_pos, cfg=sampler_cfg)
       gen_tokens.append(next_token)
