@@ -1,0 +1,263 @@
+PYTHONPATH=~/entropix/ pytest tests/test_mesh.py
+============================================================ test session starts ============================================================
+platform linux -- Python 3.10.6, pytest-8.3.3, pluggy-1.5.0
+rootdir: /home/artuskg/entropix
+configfile: pyproject.toml
+collected 8 items                                                                                                                           
+
+tests/test_mesh.py F...FFFF                                                                                                           [100%]
+
+================================================================= FAILURES ==================================================================
+_________________________________________________ test_engine_initialization_single_device __________________________________________________
+
+setup_tpu_mesh = <function setup_tpu_mesh.<locals>.create_mesh at 0x7fbf1a4b17e0>
+
+    def test_engine_initialization_single_device(setup_tpu_mesh):
+        """Test engine initialization with a single device."""
+        params = create_llama_params(MODEL_PARAMS["1B"]._asdict())
+        mesh = setup_tpu_mesh(params.num_devices)
+        weights, _ = load_weights(Path(WEIGHT_PATHS["1B"]), params)
+>       engine = EntropixEngine(params, weights, mesh, None, None, None)
+
+tests/test_mesh.py:40: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <entropix.engine.EntropixEngine object at 0x7fad031f7a00>
+params = Params(n_layers=16, n_local_heads=32, n_local_kv_heads=8, head_dim=64, max_seq_len=4096, rope_theta=500000.0, use_scaled_rope=True, num_devices=1)
+xfmr_weights = XfmrWeights(tok_embeddings=Array([[0.00312805, 0.0178223, 0.0209961, ..., -0.00521851, -0.0419922,
+        -0.0334473]...oat16), attention_norm=Array([0.443359, 0.439453, 0.820312, ..., 0.449219, 0.511719, 0.417969],      dtype=bfloat16))])
+mesh = None, tokenizer = None, xfmr_fn = None, sample_fn = None
+
+    def __init__(
+      self,
+      params: Params,
+      xfmr_weights: XfmrWeights,
+      mesh: jax.sharding.Mesh,
+      tokenizer: Tokenizer,
+      xfmr_fn: Callable,
+      sample_fn: Callable,
+    ):
+      self.params = params
+      self.xfmr_weights = xfmr_weights
+      self.mesh = mesh
+>     self.replicated = jax.NamedSharding(mesh, jax.sharding.PartitionSpec())
+E     TypeError: __init__(): incompatible function arguments. The following argument types are supported:
+E         1. __init__(self, mesh: object, spec: object | None, memory_kind: object | None = None, _parsed_pspec: object | None = None, _manual_axes: object = frozenset(), _logical_device_ids: object | None = None) -> None
+E     
+E     Invoked with types: jaxlib.xla_extension.NamedSharding, NoneType, jax._src.partition_spec.PartitionSpec
+
+entropix/engine.py:126: TypeError
+_____________________________________________________ test_inference_step_single_device _____________________________________________________
+
+setup_tpu_mesh = <function setup_tpu_mesh.<locals>.create_mesh at 0x7fad030936d0>
+
+    def test_inference_step_single_device(setup_tpu_mesh):
+        """Run inference step with single device to check for errors."""
+        params = create_llama_params(MODEL_PARAMS["1B"]._asdict())
+        mesh = setup_tpu_mesh(params.num_devices)
+        weights, _ = load_weights(Path(WEIGHT_PATHS["1B"]), params)
+>       engine = EntropixEngine(params, weights, mesh, None, None, None)
+
+tests/test_mesh.py:70: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <entropix.engine.EntropixEngine object at 0x7facffcdd300>
+params = Params(n_layers=16, n_local_heads=32, n_local_kv_heads=8, head_dim=64, max_seq_len=4096, rope_theta=500000.0, use_scaled_rope=True, num_devices=1)
+xfmr_weights = XfmrWeights(tok_embeddings=Array([[0.00312805, 0.0178223, 0.0209961, ..., -0.00521851, -0.0419922,
+        -0.0334473]...oat16), attention_norm=Array([0.443359, 0.439453, 0.820312, ..., 0.449219, 0.511719, 0.417969],      dtype=bfloat16))])
+mesh = None, tokenizer = None, xfmr_fn = None, sample_fn = None
+
+    def __init__(
+      self,
+      params: Params,
+      xfmr_weights: XfmrWeights,
+      mesh: jax.sharding.Mesh,
+      tokenizer: Tokenizer,
+      xfmr_fn: Callable,
+      sample_fn: Callable,
+    ):
+      self.params = params
+      self.xfmr_weights = xfmr_weights
+      self.mesh = mesh
+>     self.replicated = jax.NamedSharding(mesh, jax.sharding.PartitionSpec())
+E     TypeError: __init__(): incompatible function arguments. The following argument types are supported:
+E         1. __init__(self, mesh: object, spec: object | None, memory_kind: object | None = None, _parsed_pspec: object | None = None, _manual_axes: object = frozenset(), _logical_device_ids: object | None = None) -> None
+E     
+E     Invoked with types: jaxlib.xla_extension.NamedSharding, NoneType, jax._src.partition_spec.PartitionSpec
+
+entropix/engine.py:126: TypeError
+_____________________________________________________ test_inference_step_multi_device ______________________________________________________
+jax.errors.SimplifiedTraceback: For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these.
+
+The above exception was the direct cause of the following exception:
+
+setup_tpu_mesh = <function setup_tpu_mesh.<locals>.create_mesh at 0x7fbe1e9c39a0>
+
+    def test_inference_step_multi_device(setup_tpu_mesh):
+        """Run inference step with multiple devices to check for errors in multi-device setup."""
+        params = create_llama_params(MODEL_PARAMS["3B"]._asdict())
+        mesh = setup_tpu_mesh(params.num_devices)
+        weights, _ = load_weights(Path(WEIGHT_PATHS["3B"]), params)
+        engine = EntropixEngine(params, weights, mesh, None, None, None)
+    
+        # Simulate a prefill or generate call
+        padded_tokens = jnp.zeros((4, 512), dtype=jnp.int32)
+>       result, _ = engine.prefill(params=params, padded_tokens=padded_tokens, true_length=512)
+
+tests/test_mesh.py:88: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <entropix.engine.EntropixEngine object at 0x7fbe1e9a1f30>
+
+    @functools.partial(jax.jit, static_argnames=("self", "params"))
+    def prefill(
+      self,
+      *,
+      params: Params,
+      existing_prefix: Optional[jax.Array] = None,
+      padded_tokens: jax.Array,
+      true_length: int,
+      sampler: Optional[Callable[[Any], Any]] = None,  # pylint: disable=unused-argument
+      rng: Optional[jax.random.PRNGKey] = None,
+      top_k: int = 6,
+    ) -> Tuple[Prefix, ResultTokens]:
+      """Computes a kv-cache for a set of tokens conditional on existing cache.
+    
+      existing_prefix (if provided) represents a prefix that has already been
+      processed by the underlying model. tokens is logically appended
+      to the text represented by `existing_prefix`. This method returns a new
+      kv_cache (typically) for the resulting text.
+    
+      If sampler is passed, then the engine should use it do sample next token.
+      """
+      cur_pos = 0
+      bsz, seqlen = padded_tokens.shape
+      attn_mask = self.build_attn_mask(seqlen, cur_pos)
+      kvcache = KVCache.new(
+        params.n_layers, bsz, params.max_seq_len, params.n_local_kv_heads, params.head_dim
+      )
+      with self.mesh:
+>       logits, kvcache, _ = self.xfmr_fn(
+          self.xfmr_weights,
+          params,
+          padded_tokens,
+          cur_pos,
+          self.freqs_cis[:seqlen],
+          kvcache,
+          attn_mask=attn_mask,
+        )
+E       TypeError: 'NoneType' object is not callable
+
+entropix/engine.py:272: TypeError
+____________________________________________________ test_switch_model_configuration[1B] ____________________________________________________
+
+setup_tpu_mesh = <function setup_tpu_mesh.<locals>.create_mesh at 0x7fbe1e9c36d0>, model_size = '1B'
+
+    @pytest.mark.parametrize("model_size", ["1B", "3B"])
+    def test_switch_model_configuration(setup_tpu_mesh, model_size):
+        """Test that switching between model configurations works without errors."""
+        params = create_llama_params(MODEL_PARAMS[model_size]._asdict())
+        mesh = setup_tpu_mesh(params.num_devices)
+        weights, _ = load_weights(Path(WEIGHT_PATHS[model_size]), params)
+>       engine = EntropixEngine(params, weights, mesh, None, None, None)
+
+tests/test_mesh.py:99: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <entropix.engine.EntropixEngine object at 0x7fbe1e9e2da0>
+params = Params(n_layers=16, n_local_heads=32, n_local_kv_heads=8, head_dim=64, max_seq_len=4096, rope_theta=500000.0, use_scaled_rope=True, num_devices=1)
+xfmr_weights = XfmrWeights(tok_embeddings=Array([[0.00312805, 0.0178223, 0.0209961, ..., -0.00521851, -0.0419922,
+        -0.0334473]...oat16), attention_norm=Array([0.443359, 0.439453, 0.820312, ..., 0.449219, 0.511719, 0.417969],      dtype=bfloat16))])
+mesh = None, tokenizer = None, xfmr_fn = None, sample_fn = None
+
+    def __init__(
+      self,
+      params: Params,
+      xfmr_weights: XfmrWeights,
+      mesh: jax.sharding.Mesh,
+      tokenizer: Tokenizer,
+      xfmr_fn: Callable,
+      sample_fn: Callable,
+    ):
+      self.params = params
+      self.xfmr_weights = xfmr_weights
+      self.mesh = mesh
+>     self.replicated = jax.NamedSharding(mesh, jax.sharding.PartitionSpec())
+E     TypeError: __init__(): incompatible function arguments. The following argument types are supported:
+E         1. __init__(self, mesh: object, spec: object | None, memory_kind: object | None = None, _parsed_pspec: object | None = None, _manual_axes: object = frozenset(), _logical_device_ids: object | None = None) -> None
+E     
+E     Invoked with types: jaxlib.xla_extension.NamedSharding, NoneType, jax._src.partition_spec.PartitionSpec
+
+entropix/engine.py:126: TypeError
+____________________________________________________ test_switch_model_configuration[3B] ____________________________________________________
+jax.errors.SimplifiedTraceback: For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these.
+
+The above exception was the direct cause of the following exception:
+
+setup_tpu_mesh = <function setup_tpu_mesh.<locals>.create_mesh at 0x7facff572cb0>, model_size = '3B'
+
+    @pytest.mark.parametrize("model_size", ["1B", "3B"])
+    def test_switch_model_configuration(setup_tpu_mesh, model_size):
+        """Test that switching between model configurations works without errors."""
+        params = create_llama_params(MODEL_PARAMS[model_size]._asdict())
+        mesh = setup_tpu_mesh(params.num_devices)
+        weights, _ = load_weights(Path(WEIGHT_PATHS[model_size]), params)
+        engine = EntropixEngine(params, weights, mesh, None, None, None)
+    
+        # Simulate a simple inference call to confirm the configuration works
+        padded_tokens = jnp.zeros((params.num_devices, 512), dtype=jnp.int32)
+>       result, _ = engine.prefill(params=params, padded_tokens=padded_tokens, true_length=512)
+
+tests/test_mesh.py:103: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <entropix.engine.EntropixEngine object at 0x7fad03048cd0>
+
+    @functools.partial(jax.jit, static_argnames=("self", "params"))
+    def prefill(
+      self,
+      *,
+      params: Params,
+      existing_prefix: Optional[jax.Array] = None,
+      padded_tokens: jax.Array,
+      true_length: int,
+      sampler: Optional[Callable[[Any], Any]] = None,  # pylint: disable=unused-argument
+      rng: Optional[jax.random.PRNGKey] = None,
+      top_k: int = 6,
+    ) -> Tuple[Prefix, ResultTokens]:
+      """Computes a kv-cache for a set of tokens conditional on existing cache.
+    
+      existing_prefix (if provided) represents a prefix that has already been
+      processed by the underlying model. tokens is logically appended
+      to the text represented by `existing_prefix`. This method returns a new
+      kv_cache (typically) for the resulting text.
+    
+      If sampler is passed, then the engine should use it do sample next token.
+      """
+      cur_pos = 0
+      bsz, seqlen = padded_tokens.shape
+      attn_mask = self.build_attn_mask(seqlen, cur_pos)
+      kvcache = KVCache.new(
+        params.n_layers, bsz, params.max_seq_len, params.n_local_kv_heads, params.head_dim
+      )
+      with self.mesh:
+>       logits, kvcache, _ = self.xfmr_fn(
+          self.xfmr_weights,
+          params,
+          padded_tokens,
+          cur_pos,
+          self.freqs_cis[:seqlen],
+          kvcache,
+          attn_mask=attn_mask,
+        )
+E       TypeError: 'NoneType' object is not callable
+
+entropix/engine.py:272: TypeError
+========================================================== short test summary info ==========================================================
+FAILED tests/test_mesh.py::test_engine_initialization_single_device - TypeError: __init__(): incompatible function arguments. The following argument types are supported:
+FAILED tests/test_mesh.py::test_inference_step_single_device - TypeError: __init__(): incompatible function arguments. The following argument types are supported:
+FAILED tests/test_mesh.py::test_inference_step_multi_device - TypeError: 'NoneType' object is not callable
+FAILED tests/test_mesh.py::test_switch_model_configuration[1B] - TypeError: __init__(): incompatible function arguments. The following argument types are supported:
+FAILED tests/test_mesh.py::test_switch_model_configuration[3B] - TypeError: 'NoneType' object is not callable
+======================================================= 5 failed, 3 passed in 18.68s ========================================================
+artuskg@t1v-n-edbf571b-w-0:~/entropix$ 

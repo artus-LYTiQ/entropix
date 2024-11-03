@@ -7,12 +7,14 @@ import tyro
 
 import os
 
-from entropix.engine import LLAMA_1B_PARAMS, EntropixEngine
+from entropix.engine import EntropixEngine
 from entropix.model import xfmr
 from entropix.orchestrator import Driver, EntropixOrchestrator
 from entropix.sampler import sample
 from entropix.tokenizer import Tokenizer
 from entropix.weights import load_weights
+
+from entropix.config import LLAMA_1B_PARAMS
 
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh
@@ -122,8 +124,10 @@ def main():
   asyncio.run(run())
 
 
-# Check for GPU availability *before* setting XLA flags
-if jax.devices("gpu"):  # Check if any GPUs are available
+# Check available platforms
+available_platforms = {device.platform for device in jax.devices()}
+
+if "gpu" in available_platforms:  # Set flags if GPUs are available
     os.environ["XLA_FLAGS"] = (
         "--xla_gpu_enable_triton_softmax_fusion=true "
         "--xla_gpu_triton_gemm_any=True "
@@ -132,8 +136,8 @@ if jax.devices("gpu"):  # Check if any GPUs are available
         "--xla_gpu_enable_highest_priority_async_stream=true "
     )
     print("GPU detected. Setting XLA flags for GPU optimization.")
-elif jax.devices("tpu"):
-    print("TPU detected. No GPU-specific XLA flags set.") # Indicate TPU usage
+elif "tpu" in available_platforms:
+    print("TPU detected. No GPU-specific XLA flags set.")  # Indicate TPU usage
 else:
     print("WARNING: No GPU or TPU detected. Using CPU.")
 

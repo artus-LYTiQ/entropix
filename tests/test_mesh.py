@@ -1,8 +1,9 @@
 import pytest
 import jax
 import jax.numpy as jnp
-from engine_main import EntropixEngine, create_llama_params, ModelParams
-from weights import load_weights, create_partition_spec
+from entropix.engine_main import EntropixEngine
+from entropix.config import create_llama_params, ModelParams
+from entropix.weights import load_weights, create_partition_spec
 from pathlib import Path
 
 # Sample model parameters for 1B and 70B configurations
@@ -26,34 +27,46 @@ def setup_tpu_mesh():
             return jax.sharding.Mesh(mesh_shape, ("dp", "mp"))
     return create_mesh
 
-@pytest.mark.parametrize("load_or_mock_weights", ["weights/1B-Instruct"], indirect=True)
-def test_engine_initialization_single_device(setup_tpu_mesh, load_or_mock_weights):
+WEIGHT_PATHS = {
+    "1B": "weights/1B-Instruct",
+    "3B": "weights/3B-Instruct"
+}
+
+def test_engine_initialization_single_device(setup_tpu_mesh):
     """Test engine initialization with a single device."""
     params = create_llama_params(MODEL_PARAMS["1B"]._asdict())
     mesh = setup_tpu_mesh(params.num_devices)
-    weights, _ = load_or_mock_weights(params)
+    weights, _ = load_weights(Path(WEIGHT_PATHS["1B"]), params)
     engine = EntropixEngine(params, weights, mesh, None, None, None)
 
     assert engine.mesh is None, "Expected no mesh for single device model."
     assert engine.params.num_devices == 1, "Expected single-device configuration."
 
-@pytest.mark.parametrize("load_or_mock_weights", ["weights/3B-Instruct"], indirect=True)
-def test_engine_initialization_multi_device(setup_tpu_mesh, load_or_mock_weights):
+def test_engine_initialization_multi_device(setup_tpu_mesh):
     """Test engine initialization with multiple devices."""
     params = create_llama_params(MODEL_PARAMS["3B"]._asdict())
     mesh = setup_tpu_mesh(params.num_devices)
-    weights, mesh_used = load_or_mock_weights(params)
+    weights, mesh_used = load_weights(Path(WEIGHT_PATHS["3B"]), params)
     engine = EntropixEngine(params, weights, mesh, None, None, None)
 
     assert engine.mesh == mesh_used, "Mesh mismatch between weights and engine."
-    assert engine.params.num_devices == 8, "Expected 8-device configuration."
+    assert engine.params.num_devices == 4, "Expected 4-device configuration."
 
-@pytest.mark.parametrize("load_or_mock_weights", ["/path/to/real/weights"], indirect=True)
-def test_inference_step_single_device(setup_tpu_mesh, load_or_mock_weights):
+def test_partition_spec_single_device():
+    """Test partition spec creation for single device."""
+    partition_spec = create_partition_spec("tok_embeddings", 1)
+    assert partition_spec == jax.sharding.PartitionSpec(), "Expected no sharding for single device."
+
+def test_partition_spec_multi_device():
+    """Test partition spec creation for multiple devices."""
+    partition_spec = create_partition_spec("tok_embeddings", 4)
+    assert partition_spec == jax.sharding.PartitionSpec("dp", "mp"), "Expected dp, mp sharding for embeddings."
+
+def test_inference_step_single_device(setup_tpu_mesh):
     """Run inference step with single device to check for errors."""
     params = create_llama_params(MODEL_PARAMS["1B"]._asdict())
     mesh = setup_tpu_mesh(params.num_devices)
-    weights, _ = load_or_mock_weights(params)
+    weights, _ = load_weights(Path(WEIGHT_PATHS["1B"]), params)
     engine = EntropixEngine(params, weights, mesh, None, None, None)
 
     # Simulate a prefill or generate call
@@ -63,27 +76,26 @@ def test_inference_step_single_device(setup_tpu_mesh, load_or_mock_weights):
     assert result is not None, "Expected result from single device inference."
     assert result["tokens"].shape == (6, 1), "Unexpected shape for generated tokens."
 
-@pytest.mark.parametrize("load_or_mock_weights", ["/path/to/real/weights"], indirect=True)
-def test_inference_step_multi_device(setup_tpu_mesh, load_or_mock_weights):
+def test_inference_step_multi_device(setup_tpu_mesh):
     """Run inference step with multiple devices to check for errors in multi-device setup."""
-    params = create_llama_params(MODEL_PARAMS["70B"]._asdict())
+    params = create_llama_params(MODEL_PARAMS["3B"]._asdict())
     mesh = setup_tpu_mesh(params.num_devices)
-    weights, _ = load_or_mock_weights(params)
+    weights, _ = load_weights(Path(WEIGHT_PATHS["3B"]), params)
     engine = EntropixEngine(params, weights, mesh, None, None, None)
 
     # Simulate a prefill or generate call
-    padded_tokens = jnp.zeros((8, 512), dtype=jnp.int32)
+    padded_tokens = jnp.zeros((4, 512), dtype=jnp.int32)
     result, _ = engine.prefill(params=params, padded_tokens=padded_tokens, true_length=512)
 
     assert result is not None, "Expected result from multi-device inference."
     assert result["tokens"].shape == (6, 1), "Unexpected shape for generated tokens in multi-device inference."
 
-@pytest.mark.parametrize("model_size, load_or_mock_weights", [("1B", "/path/to/real/weights"), ("70B", "/path/to/real/weights")], indirect=["load_or_mock_weights"])
-def test_switch_model_configuration(setup_tpu_mesh, load_or_mock_weights, model_size):
+@pytest.mark.parametrize("model_size", ["1B", "3B"])
+def test_switch_model_configuration(setup_tpu_mesh, model_size):
     """Test that switching between model configurations works without errors."""
     params = create_llama_params(MODEL_PARAMS[model_size]._asdict())
     mesh = setup_tpu_mesh(params.num_devices)
-    weights, _ = load_or_mock_weights(params)
+    weights, _ = load_weights(Path(WEIGHT_PATHS[model_size]), params)
     engine = EntropixEngine(params, weights, mesh, None, None, None)
 
     # Simulate a simple inference call to confirm the configuration works

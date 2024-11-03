@@ -10,7 +10,7 @@ from jax.experimental import mesh_utils
 
 from pathlib import Path
 
-from entropix.engine import Params
+from entropix.config import Params
 
 
 class LayerWeights(NamedTuple):
