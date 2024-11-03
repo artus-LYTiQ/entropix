@@ -12,6 +12,8 @@ from entropix.dslider import initialize_state
 from entropix.dslider_config import DEFAULT_DS_CONFIG
 from entropix.tokenizer import Tokenizer
 
+from entropix.weights import XfmrWeights
+
 """Defines the JetStream API.
 
 These functions are the accelerator functions which an outer sampling loop
@@ -29,109 +31,6 @@ Prefix = Any
 DeviceTokens = Any
 # Cpus asscociated with the mesh.
 CpuDevices = Any
-
-
-class LayerWeights(NamedTuple):
-  wq: jax.Array
-  wk: jax.Array
-  wv: jax.Array
-  wo: jax.Array
-  w1: jax.Array
-  w2: jax.Array
-  w3: jax.Array
-  ffn_norm: jax.Array
-  attention_norm: jax.Array
-
-
-class XfmrWeights(NamedTuple):
-  tok_embeddings: jax.Array
-  norm: jax.Array
-  output: jax.Array
-  layer_weights: List[LayerWeights]
-
-
-class ModelParams(NamedTuple):
-  dim: int
-  n_layers: int
-  n_heads: int
-  n_kv_heads: int
-  vocab_size: int
-  ffn_dim_multiplier: float
-  multiple_of: int
-  norm_eps: float
-  rope_theta: float
-  use_scaled_rope: bool
-  max_seq_len: int
-
-
-class Params(NamedTuple):
-  n_layers: int
-  n_local_heads: int
-  n_local_kv_heads: int
-  head_dim: int
-  max_seq_len: int
-  rope_theta: float
-  use_scaled_rope: bool
-
-
-def create_llama_params(params: Dict[str, Any]) -> Params:
-  return Params(
-    n_layers=params["n_layers"],
-    n_local_heads=params["n_heads"],
-    n_local_kv_heads=params["n_kv_heads"],
-    head_dim=params["dim"] // params["n_heads"],
-    max_seq_len=params["max_seq_len"],
-    rope_theta=params["rope_theta"],
-    use_scaled_rope=params["use_scaled_rope"],
-  )
-
-
-# Model configurations
-MODEL_1B = ModelParams(
-  dim=2048,
-  n_layers=16,
-  n_heads=32,
-  n_kv_heads=8,
-  vocab_size=128256,
-  ffn_dim_multiplier=1.5,
-  multiple_of=256,
-  norm_eps=1e-05,
-  rope_theta=500000.0,
-  use_scaled_rope=True,
-  max_seq_len=4096,
-)
-
-MODEL_70B = ModelParams(
-  dim=8192,
-  n_layers=80,
-  n_heads=64,
-  n_kv_heads=8,
-  vocab_size=128256,
-  ffn_dim_multiplier=1.5,
-  multiple_of=256,
-  norm_eps=1e-05,
-  rope_theta=500000.0,
-  use_scaled_rope=True,
-  max_seq_len=4096,
-)
-
-# Create LLaMA parameters
-LLAMA_1B_PARAMS = create_llama_params(MODEL_1B._asdict())
-LLAMA_70B_PARAMS = create_llama_params(MODEL_70B._asdict())
-
-
-def create_partition_spec(key):
-  dp = "dp"
-  mp = "mp"
-  fsdp = "fsdp"
-  if "norm" in key:
-    return PS()
-  if "rope.freqs" in key:
-    return PS()
-  elif "tok_embeddings" in key or "output" in key or "w2" in key:
-    return PS(fsdp, mp)
-  else:
-    return PS(mp, fsdp)
 
 
 class DecodeState(NamedTuple):
