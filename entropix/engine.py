@@ -124,7 +124,10 @@ class EntropixEngine:
     self.params = params
     self.xfmr_weights = xfmr_weights
     self.mesh = mesh
-    self.replicated = jax.NamedSharding(mesh, jax.sharding.PartitionSpec())
+    if mesh is not None:
+        self.replicated = jax.NamedSharding(mesh, jax.sharding.PartitionSpec())
+    else:
+        self.replicated = None  # Or use a default sharding strategy if needed.
     self.tokenizer = tokenizer
     self.freqs_cis = jax.device_put(
       self.precompute_freqs_cis(

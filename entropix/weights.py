@@ -66,7 +66,7 @@ def load_weights(ckpt_dir: Path, model_params: Params, mesh: Optional[Mesh]):
               weight = jax.device_put(weight)  # Single device
 
           w[name] = weight
-          print(f"{name} placed on:", weight.device if mesh is None else weight.sharding)
+          #print(f"{name} placed on:", weight.device if mesh is None else weight.sharding)
 
           # Organize weights into structured format for model layers
           if any(lyr in name for lyr in ["wq", "wk", "wv", "wo", "w1", "w2", "w3"]):
@@ -78,7 +78,7 @@ def load_weights(ckpt_dir: Path, model_params: Params, mesh: Optional[Mesh]):
                 model_params.head_dim,
               )
           w[name] = weight
-          print(f"{name} placed on:", weight.device if num_devices == 1 else weight.sharding)
+          #print(f"{name} placed on:", weight.device if num_devices == 1 else weight.sharding)
 
       for i in range(model_params.n_layers):
         layer_weights.append(

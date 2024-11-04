@@ -12,7 +12,7 @@ huggingface-cli login
 git config --global user.email "Artus@LYTiQ.de"
 git config --global user.name "Artus KG"
 
-pip install tyro ml_dtypes
+pip install tyro ml_dtypes blobfile
 
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 
