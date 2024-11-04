@@ -7,6 +7,7 @@ class ModelParams(NamedTuple):
   n_kv_heads: int
   vocab_size: int
   ffn_dim_multiplier: float
+  intermediate_size: int
   multiple_of: int
   norm_eps: float
   rope_theta: float
@@ -26,6 +27,7 @@ class Params(NamedTuple):
   use_scaled_rope: bool
   num_devices: int
   model_name: str
+  intermediate_size: int
 
 
 def create_llama_params(params: Dict[str, Any]) -> Params:
@@ -39,6 +41,7 @@ def create_llama_params(params: Dict[str, Any]) -> Params:
     use_scaled_rope=params["use_scaled_rope"],
     num_devices=params["num_devices"],
     model_name=params["model_name"],
+    intermediate_size=params["intermediate_size"],
   )
 
 
@@ -50,6 +53,7 @@ MODEL_1B = ModelParams(
   n_kv_heads=8,
   vocab_size=128256,
   ffn_dim_multiplier=1.5,
+  intermediate_size=8192,
   multiple_of=256,
   norm_eps=1e-05,
   rope_theta=500000.0,
@@ -66,6 +70,7 @@ MODEL_3B = ModelParams(
   n_kv_heads=8,
   vocab_size=128256,
   ffn_dim_multiplier=1.5,
+  intermediate_size=8192,
   multiple_of=256,
   norm_eps=1e-05,
   rope_theta=500000.0,
@@ -82,6 +87,7 @@ MODEL_70B = ModelParams(
   n_kv_heads=8,
   vocab_size=128256,
   ffn_dim_multiplier=1.5,
+  intermediate_size=8192,
   multiple_of=256,
   norm_eps=1e-05,
   rope_theta=500000.0,
