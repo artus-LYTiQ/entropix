@@ -1,4 +1,4 @@
-from typing import List, NamedTuple, Optional
+from typing import List, NamedTuple, Optional, Dict
 import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as PS
@@ -26,30 +26,31 @@ class XfmrWeights(NamedTuple):
     layer_weights: List[LayerWeights]
 
 # Define sharding specifications
-def create_partition_spec(key, num_devices):
-  """
-  Initially, we only use a very simple partitioning: 
-  a.) No partitioning for models that fit on 1 device. 
-  b.) Sharding the larger weights over the devices for larger models.
-  """
-  if num_devices == 1:
-      return PS()  # No sharding needed for single device
+# def create_partition_spec(key, num_devices):
+#   """
+#   Initially, we only use a very simple partitioning: 
+#   a.) No partitioning for models that fit on 1 device. 
+#   b.) Sharding the larger weights over the devices for larger models.
+#   """
+#   if num_devices == 1:
+#       return PS()  # No sharding needed for single device
 
-  # Replicate certain parameters without sharding
-  if "norm" in key or "rope.freqs" in key:
-      return PS()  # Replicated parameters
+#   # Replicate certain parameters without sharding
+#   if "norm" in key or "rope.freqs" in key:
+#       return PS()  # Replicated parameters
   
-  # Model parallel for larger matrices based on key name
-  #elif any(layer in key for layer in ["wq", "wk", "wv", "wo", "w1", "w2", "w3"]):
-  return PS("x")
+#   # Model parallel for larger matrices based on key name
+#   #elif any(layer in key for layer in ["wq", "wk", "wv", "wo", "w1", "w2", "w3"]):
+#   return PS("x")
 
-def load_weights(ckpt_dir: Path, model_params: Params, mesh: Optional[Mesh]):
+def load_weights(ckpt_dir: Path, model_params: Params, mesh: Optional[Mesh], partition_spec: Dict, device=None) -> XfmrWeights:
+    """Device is only used when Mesh is None"""
     w = {}
     layer_weights = []
 
     num_devices = len(mesh.devices) if mesh is not None else 1
 
-    context = mesh if mesh is not None else nullcontext()
+    context = mesh if mesh is not None else device
 
     # Load weights
     with context:
@@ -58,7 +59,7 @@ def load_weights(ckpt_dir: Path, model_params: Params, mesh: Optional[Mesh]):
           name = ".".join(str(file).split("/")[-1].split(".")[:-1])
           weight = jnp.load(file=file, mmap_mode="r", allow_pickle=True)
 
-          partition_spec = create_partition_spec(name, num_devices)
+          partition_spec = partition_spec
           if mesh is not None:
               sharding = NamedSharding(mesh, partition_spec)
               weight = jax.device_put(weight, sharding)

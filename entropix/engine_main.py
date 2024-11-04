@@ -39,41 +39,78 @@ class Request:
     self.metadata: Metadata = metadata
     self.is_client_side_tokenization: bool = is_client_side_tokenization
 
+from jax.experimental import mesh_utils
+from jax.sharding import Mesh, PartitionSpec as PS
+
+def setup_engine_mesh_and_partition_spec(total_devices, num_devices_per_engine, num_engines):
+    """Configures mesh and partition specs for each engine based on device requirements."""
+    devices = jax.devices()
+    
+    engine_meshes = []
+    engine_partition_specs = []
+    
+    for i in range(num_engines):
+        # Determine devices for the current engine
+        start_idx = i * num_devices_per_engine
+        engine_devices = devices[start_idx: start_idx + num_devices_per_engine]
+        
+        # Case 1: Single device per engine (no mesh needed)
+        if num_devices_per_engine == 1:
+            mesh = None  # No mesh for single-device engines
+            partition_spec = {
+                "attention": PS(),         # No partitioning
+                "ffn": PS(),               # No partitioning
+                "embedding": PS()
+            }
+        
+        # Case 2: Multi-device per engine (use a mesh and partition specs)
+        else:
+            mesh = Mesh(engine_devices, ("x",))  # Define a 1D mesh for multi-device sharding
+            partition_spec = {
+                "attention": PS("x"),      # Shard attention heads across devices
+                "ffn": PS("x"),            # Shard feed-forward network layers
+                "embedding": PS("x")       # Shard embeddings if they are large
+            }
+        
+        # Append the mesh and partition spec for the current engine
+        engine_meshes.append(mesh)
+        engine_partition_specs.append(partition_spec)
+
+    print(f"Configured {num_engines} engines with {num_devices_per_engine} devices per engine.")
+    return engine_meshes, engine_partition_specs
 
 async def run(
   ckpt_path: Path = Path("weights/1B-Instruct"),
   tokenizer_path: str = "entropix/tokenizer.model",
-  num_devices_per_model: int = 1,
 ):
+  
   model_params = LLAMA_1B_PARAMS
   print(f"Loading model {model_params.model_name} from path {ckpt_path}")
 
   total_devices = jax.device_count()
+  num_devices_per_model = model_params.num_devices
+  num_engines = total_devices // num_devices_per_model
+
   print(f"Total devices: {total_devices}")
   print(f"Devices per model: {num_devices_per_model}")
-  num_models = total_devices // num_devices_per_model
-  print(f"Number of models: {num_models}")
+  print(f"Number of models: {num_engines}")
+
   if total_devices % num_devices_per_model != 0:
       print(f"Warning: {total_devices % num_devices_per_model} devices will be unused.")
 
   # In case of 1 physical device (TPU or GPU), we use jax.default_device.
   # In case of multiple devices, we use jax.sharding.Mesh for multi-device cases.
   engines = []
-  for i in range(num_models):
-      # Determine devices for this model
-      devices = jax.devices()[i * num_devices_per_model : (i + 1) * num_devices_per_model]
+  engine_meshes, partition_specs = setup_engine_mesh_and_partition_spec(
+    total_devices, num_devices_per_model, num_engines
+)
 
-      # Create mesh if more than one device is used per model
-      if num_devices_per_model > 1:
-          mesh = Mesh(devices, ("x",))
-          context = mesh
-      else:
-          mesh = None  # Single-device case
-          context = jax.default_device(devices[0])
-
+  for i in range(num_engines):
       # Load weights using the provided mesh
+      context = engine_meshes[i] if engine_meshes[i] else nullcontext()
+
       with context:
-        xfmr_weights, _ = load_weights(ckpt_path, model_params, mesh)
+        xfmr_weights, _ = load_weights(ckpt_path, model_params, mesh=context, partition_spec=partition_specs[i], device=jax.local_devices[i])
 
       # Create tokenizer
       tokenizer = Tokenizer(tokenizer_path)
@@ -94,8 +131,8 @@ async def run(
       generate_engines=engines,  # You'll likely want separate generate engines in a real application
       #prefill_params=[model_params if num_devices_per_model == 1 else model_params._replace(num_devices=num_devices_per_model)] * num_models,
       #generate_params=[model_params if num_devices_per_model == 1 else model_params._replace(num_devices=num_devices_per_model)] * num_models,
-      prefill_params=[model_params] * num_models,
-      generate_params=[model_params] * num_models,
+      prefill_params=[model_params] * num_engines,
+      generate_params=[model_params] * num_engines,
   )
 
   orchestrator = EntropixOrchestrator(driver)

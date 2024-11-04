@@ -7,62 +7,32 @@ from pathlib import Path
 from typing import OrderedDict
 
 from entropix.engine import EntropixEngine
-from entropix.weights import load_weights, create_partition_spec, XfmrWeights
+from entropix.weights import load_weights, XfmrWeights
 from entropix.config import Params, LLAMA_1B_PARAMS, LLAMA_3B_PARAMS
 from entropix.tokenizer import Tokenizer
 from entropix.model import xfmr
 from entropix.orchestrator import Driver, EntropixOrchestrator
 from entropix.sampler import sample
+from entropix.engine_main import setup_engine_mesh_and_partition_spec
+
+@pytest.fixture(params=["single_engine", "multi_engine"])
+def engine_test_type(request):
+    """Fixture that indicates whether the test is for a single engine or multiple engines."""
+    return request.param
 
 @pytest.fixture
-def setup_single_device_mesh():
-    # Single device configuration for test
-    return None  # None represents single device setup in JAX
+def setup_device_or_mesh(engine_test_type):
+    """Fixture that sets up either a single device or a multi-device mesh based on the engine test type."""
+    
+    if engine_test_type == "single_engine":
+        engine_meshes, engine_partition_specs = setup_engine_mesh_and_partition_spec(total_devices=4, num_devices_per_engine=1, num_engines=4)
+        is_multi_device = False
 
-@pytest.fixture
-def setup_multi_device_mesh():
-    # Multi-device (4 devices in a TPU configuration)
-    devices = jax.devices()[:4]
-    mesh = Mesh(devices, ["x"])
-    return mesh
+    elif engine_test_type == "multi_engine":
+        engine_meshes, engine_partition_specs = setup_engine_mesh_and_partition_spec(total_devices=4, num_devices_per_engine=4, num_engines=1)
+        is_multi_device = True
 
-def test_single_device_partition_spec():
-    # Test partition spec with a single device setup
-    spec = create_partition_spec("norm", num_devices=1)
-    assert spec == PS()  # No partitioning for single device
-
-def test_multi_device_partition_spec():
-    # Test partition specs with a multi-device setup
-    spec_embedding = create_partition_spec("tok_embeddings", num_devices=4)
-    spec_output = create_partition_spec("output", num_devices=4)
-    spec_attention = create_partition_spec("wq", num_devices=4)
-    assert spec_embedding == PS("x")  # Data and model parallel for embeddings
-    assert spec_output == PS("x")
-    assert spec_attention == PS("x")  # Model parallel for larger matrices
-
-def weight_load_helper(params, ckpt_path, i):
-    # Determine devices for this model
-    devices = jax.devices()[i * params.num_devices : (i + 1) * params.num_devices]
-
-    # Create mesh if more than one device is used per model
-    if params.num_devices > 1:
-        mesh = Mesh(devices, ("x",))
-        context = mesh
-    else:
-        mesh = None  # Single-device case
-        context = jax.default_device(devices[0])
-
-    # Load weights using the provided mesh
-    with context:
-        xfmr_weights, _ = load_weights(ckpt_path, params, mesh)
-        assert xfmr_weights is not None
-
-        if params.num_devices == 1:
-            assert mesh is None
-        else:
-            assert isinstance(mesh, Mesh)   
-            assert mesh.shape == OrderedDict([("x", params.num_devices)])
-    return mesh,xfmr_weights
+    return {"meshes": engine_meshes, "specs": engine_partition_specs, "multi" : is_multi_device}
 
 def validate_xfmr_weights(xfmr_weights: XfmrWeights, model_params: Params):
     # Basic checks for main fields in XfmrWeights
@@ -114,29 +84,35 @@ def validate_xfmr_weights(xfmr_weights: XfmrWeights, model_params: Params):
         #print(f"Layer {i} wv: mean={jnp.mean(layer.wv)}, min={jnp.min(layer.wv)}, max={jnp.max(layer.wv)}")
         # Repeat for other components as needed
 
-    
+def test_load_weights(setup_device_or_mesh):
+    """Test weight loading with single or multiple engines, adjusting based on the engine type."""
+    meshes = setup_device_or_mesh["meshes"]
+    specs = setup_device_or_mesh["specs"]
+    multi_device = setup_device_or_mesh["multi"]
 
-def test_load_weights_single_device():
-    # Load weights in a single device setup
-    ckpt_path: Path = Path("weights/1B-Instruct")  
-    i = 0  # Index for device selection
-    mesh, xfmr_weights = weight_load_helper(LLAMA_1B_PARAMS, ckpt_path, i)
-    validate_xfmr_weights(xfmr_weights, LLAMA_1B_PARAMS)
-    print(f"{xfmr_weights.tok_embeddings.shape=}") 
+    # Call load_weights with the correct params and either mesh or device
+    device = None
+    if multi_device:
+        weights = load_weights(ckpt_dir=Path("weights/3B-Instruct"), model_params=LLAMA_3B_PARAMS, mesh=meshes[0], partition_spec=specs[0], device=device)
+    else:
+        device=jax.local_devices()[0] # just take first device for now. will work until we look over all possible engines
+        weights = load_weights(ckpt_dir=Path("weights/1B-Instruct"), model_params=LLAMA_1B_PARAMS, mesh=meshes[0], partition_spec=specs[0], device=device)
 
-def test_load_weights_multi_device():
-    # Load weights in a multi-device setup
-    ckpt_path = Path("weights/3B-Instruct")  
-    i = 0  # Index for device selection
-
-    # Create mesh if more than one device is used per model
-    mesh, xfmr_weights = weight_load_helper(LLAMA_3B_PARAMS, ckpt_path, i)
-    print(mesh.devices, mesh.axis_names, mesh.shape)  # Print mesh details for debugging
-    validate_xfmr_weights(xfmr_weights, LLAMA_3B_PARAMS)
+    # Validate the weights based on single-engine or multi-engine setup
+    if meshes[0]:
+        # Multi-device case: verify weights are sharded across mesh devices
+        assert all(weight.is_sharded for weight in weights.values()), "Weights should be sharded for multi-device mesh"
+        # print out the sharding information
+        for weight in weights.values():
+            print(f"Weight sharding: {weight.sharding}")
+    else:
+        # Single-device case: verify weights are placed on the specified device
+        for weight in weights.values():
+            assert weight.device() == device, f"Weight should be on device {device}"
 
 def test_engine_initialization_single_device(setup_single_device_mesh):
     # Initialize engine with single device
-    xfmr_weights = test_load_weights_single_device()  # Load weights for single device
+    xfmr_weights = TODO  # Load weights for single device
     tokenizer_path: str = "entropix/tokenizer.model"
     tokenizer = Tokenizer(tokenizer_path)
     engine = EntropixEngine(LLAMA_1B_PARAMS, xfmr_weights, setup_single_device_mesh, tokenizer, None, None)
@@ -144,7 +120,7 @@ def test_engine_initialization_single_device(setup_single_device_mesh):
 
 def test_engine_initialization_multi_device(setup_multi_device_mesh):
     # Initialize engine with multi-device
-    xfmr_weights = test_load_weights_multi_device()  # Load weights for multi-device
+    xfmr_weights = TODO  # Load weights for multi-device
     tokenizer_path: str = "entropix/tokenizer.model"
     tokenizer = Tokenizer(tokenizer_path)
     engine = EntropixEngine(LLAMA_3B_PARAMS, xfmr_weights, setup_multi_device_mesh, tokenizer, None, None)
@@ -153,7 +129,7 @@ def test_engine_initialization_multi_device(setup_multi_device_mesh):
 
 def test_inference_single_device(setup_single_device_mesh):
     # Initialize engine with single device
-    _, xfmr_weights = weight_load_helper(LLAMA_1B_PARAMS, Path("weights/1B-Instruct"), i=0)  # Load weights for single device
+    _, xfmr_weights = TODO (LLAMA_1B_PARAMS, Path("weights/1B-Instruct"), i=0)  # Load weights for single device
     assert xfmr_weights.tok_embeddings is not None, "Token embeddings missing"
     tokenizer_path: str = "entropix/tokenizer.model"
     tokenizer = Tokenizer(tokenizer_path)
@@ -170,7 +146,7 @@ def test_inference_single_device(setup_single_device_mesh):
 
 def test_inference_multi_device(setup_multi_device_mesh):
     # Initialize engine with single device
-    _, xfmr_weights = weight_load_helper(LLAMA_1B_PARAMS, Path("weights/1B-Instruct"), i=0)  # Load weights for single device
+    _, xfmr_weights = TODO (LLAMA_1B_PARAMS, Path("weights/1B-Instruct"), i=0)  # Load weights for single device
     tokenizer_path: str = "entropix/tokenizer.model"
     tokenizer = Tokenizer(tokenizer_path)
     engine = EntropixEngine(LLAMA_3B_PARAMS, xfmr_weights, setup_multi_device_mesh, tokenizer, xfmr_fn=jax.jit(xfmr, static_argnames=("model_params",)),
