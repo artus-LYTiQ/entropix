@@ -1,6 +1,7 @@
 import functools
 import math
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, Union
+from contextlib import nullcontext
 
 import jax
 import jax.numpy as jnp
@@ -268,7 +269,8 @@ class EntropixEngine:
     kvcache = KVCache.new(
       params.n_layers, bsz, params.max_seq_len, params.n_local_kv_heads, params.head_dim
     )
-    with self.mesh:
+    context = self.mesh if self.mesh is not None else nullcontext()
+    with context:
       logits, kvcache, _ = self.xfmr_fn(
         self.xfmr_weights,
         params,
@@ -340,7 +342,8 @@ class EntropixEngine:
     freqs_cis_slice = jax.lax.dynamic_slice(
       self.freqs_cis, (cur_pos, 0), (1, self.freqs_cis.shape[1])
     )
-    with self.mesh:
+    context = self.mesh if self.mesh is not None else nullcontext()
+    with context:
       logits, kvcache, _ = self.xfmr_fn(
         self.xfmr_weights,
         params,

@@ -13,6 +13,7 @@ class ModelParams(NamedTuple):
   use_scaled_rope: bool
   max_seq_len: int
   num_devices: int
+  model_name: str
 
 
 class Params(NamedTuple):
@@ -24,6 +25,7 @@ class Params(NamedTuple):
   rope_theta: float
   use_scaled_rope: bool
   num_devices: int
+  model_name: str
 
 
 def create_llama_params(params: Dict[str, Any]) -> Params:
@@ -36,6 +38,7 @@ def create_llama_params(params: Dict[str, Any]) -> Params:
     rope_theta=params["rope_theta"],
     use_scaled_rope=params["use_scaled_rope"],
     num_devices=params["num_devices"],
+    model_name=params["model_name"],
   )
 
 
@@ -53,6 +56,7 @@ MODEL_1B = ModelParams(
   use_scaled_rope=True,
   max_seq_len=4096,
   num_devices=1,
+  model_name= "Llama_3.2_1B",
 )
 
 MODEL_3B = ModelParams(
@@ -68,6 +72,7 @@ MODEL_3B = ModelParams(
   use_scaled_rope=True,
   max_seq_len=4096,
   num_devices=4, # to test mp sharding set to 4 TPUs/GPUs
+  model_name= "Llama_3.2_3B",
 )
 
 MODEL_70B = ModelParams(
@@ -83,6 +88,7 @@ MODEL_70B = ModelParams(
   use_scaled_rope=True,
   max_seq_len=4096,
   num_devices=8,
+  model_name= "Llama_3.2_70B",
 )
 
 # Create LLaMA parameters

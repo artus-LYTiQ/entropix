@@ -19,6 +19,8 @@ from entropix.config import LLAMA_1B_PARAMS
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh
 
+from contextlib import nullcontext
+
 class Metadata:
   def __init__(self):
     self.start_time = None
@@ -44,9 +46,13 @@ async def run(
   num_devices_per_model: int = 1,
 ):
   model_params = LLAMA_1B_PARAMS
+  print(f"Loading model {model_params.model_name} from path {ckpt_path}")
 
   total_devices = jax.device_count()
+  print(f"Total devices: {total_devices}")
+  print(f"Devices per model: {num_devices_per_model}")
   num_models = total_devices // num_devices_per_model
+  print(f"Number of models: {num_models}")
   if total_devices % num_devices_per_model != 0:
       print(f"Warning: {total_devices % num_devices_per_model} devices will be unused.")
 
@@ -54,38 +60,42 @@ async def run(
   # In case of multiple devices, we use jax.sharding.Mesh for multi-device cases.
   engines = []
   for i in range(num_models):
-      if num_devices_per_model == 1:  # Single device case
-          device = jax.local_devices()[i]
-          with jax.default_device(device):
-              xfmr_weights, _ = load_weights(ckpt_path, model_params)
-              mesh = None
-      else:  # Multi-device case - MP sharding
-          devices = jax.local_devices()[i * num_devices_per_model:(i + 1) * num_devices_per_model]
-          mesh = Mesh(devices, ("mp",))
-          with mesh:
-              xfmr_weights, _ = load_weights(ckpt_path, model_params._replace(num_devices=num_devices_per_model))
+      # Determine devices for this model
+      devices = jax.devices()[i * num_devices_per_model : (i + 1) * num_devices_per_model]
 
-      # Engine creation
-      with mesh if mesh else jax.default_device(device if num_devices_per_model==1 else jax.devices()[0]): # include else jax.devices()[0] for cases where there are only TPUs and no devices are assigned yet
-          tokenizer = Tokenizer(tokenizer_path)
-          xfmr_fn = jax.jit(xfmr, static_argnames=("model_params",))
-          sample_fn = jax.jit(sample)
+      # Create mesh if more than one device is used per model
+      if num_devices_per_model > 1:
+          mesh = Mesh(devices, ("x",))
+          context = mesh
+      else:
+          mesh = None  # Single-device case
+          context = jax.default_device(devices[0])
 
-          engine = EntropixEngine(
-              model_params if num_devices_per_model == 1 else model_params._replace(num_devices=num_devices_per_model),
-              xfmr_weights,
-              mesh,
-              tokenizer,
-              xfmr_fn,
-              sample_fn,
-          )
-          engines.append(engine)
+      # Load weights using the provided mesh
+      with context:
+        xfmr_weights, _ = load_weights(ckpt_path, model_params, mesh)
+
+      # Create tokenizer
+      tokenizer = Tokenizer(tokenizer_path)
+
+      # Create engine
+      engine = EntropixEngine(
+          model_params,
+          xfmr_weights,
+          mesh,
+          tokenizer,
+          xfmr_fn=jax.jit(xfmr, static_argnames=("model_params",)),
+          sample_fn=jax.jit(sample),
+      )
+      engines.append(engine)
 
   driver = Driver(
       prefill_engines=engines,
       generate_engines=engines,  # You'll likely want separate generate engines in a real application
-      prefill_params=[model_params if num_devices_per_model == 1 else model_params._replace(num_devices=num_devices_per_model)] * num_models,
-      generate_params=[model_params if num_devices_per_model == 1 else model_params._replace(num_devices=num_devices_per_model)] * num_models,
+      #prefill_params=[model_params if num_devices_per_model == 1 else model_params._replace(num_devices=num_devices_per_model)] * num_models,
+      #generate_params=[model_params if num_devices_per_model == 1 else model_params._replace(num_devices=num_devices_per_model)] * num_models,
+      prefill_params=[model_params] * num_models,
+      generate_params=[model_params] * num_models,
   )
 
   orchestrator = EntropixOrchestrator(driver)
